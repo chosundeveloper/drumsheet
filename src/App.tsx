@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
+import type { ChangeEvent } from 'react'
 import './App.css'
 
 const NOTE_ROWS = [
@@ -24,6 +25,13 @@ const STAFF = {
   lines: 5,
   subdivisions: 16,
   beats: 4,
+} as const
+
+const ZOOM = {
+  min: 1,
+  max: 1.8,
+  step: 0.05,
+  default: 1.45,
 } as const
 
 const topLineY = STAFF.paddingY
@@ -52,6 +60,10 @@ function App() {
   const svgRef = useRef<SVGSVGElement | null>(null)
   const [notes, setNotes] = useState<PlacedNote[]>([])
   const [hoverSlot, setHoverSlot] = useState<PlacedNote | null>(null)
+  const [zoom, setZoom] = useState<number>(ZOOM.default)
+
+  const scaledWidth = Math.round(STAFF.width * zoom)
+  const zoomLabel = `${Math.round(zoom * 100)}%`
 
   const rowsById = useMemo(() => {
     const map = new Map<NoteRowId, NoteRow>()
@@ -134,6 +146,10 @@ function App() {
     setNotes([])
   }
 
+  const handleZoomChange = (event: ChangeEvent<HTMLInputElement>) => {
+    setZoom(Number(event.target.value))
+  }
+
   const renderNote = (note: PlacedNote, key: string, isPreview = false) => {
     const row = rowsById.get(note.rowId)
     if (!row) {
@@ -188,6 +204,19 @@ function App() {
           nearest voice and sixteenth-note grid so you can sketch grooves quickly.
         </p>
         <div className="controls">
+          <label className="zoom-control">
+            <span>Staff size</span>
+            <input
+              type="range"
+              min={ZOOM.min}
+              max={ZOOM.max}
+              step={ZOOM.step}
+              value={zoom}
+              onChange={handleZoomChange}
+              aria-label="Adjust staff size"
+            />
+            <span className="zoom-control-value">{zoomLabel}</span>
+          </label>
           <button type="button" onClick={handleClear} disabled={notes.length === 0}>
             Clear measure
           </button>
@@ -202,6 +231,7 @@ function App() {
           onMouseMove={handlePointerMove}
           onMouseLeave={handleMouseLeave}
           onClick={handleClick}
+          style={{ width: `${scaledWidth}px`, maxWidth: '100%' }}
         >
           <rect
             x={32}
