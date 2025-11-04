@@ -12,8 +12,15 @@ const NOTE_ROWS = [
 type NoteRow = (typeof NOTE_ROWS)[number]
 type NoteRowId = NoteRow['id']
 
-type PlacedNote = {
+type MeasureNote = {
   column: number
+  rowId: NoteRowId
+}
+
+type HoverSlot = {
+  measure: number
+  column: number
+  columnInMeasure: number
   rowId: NoteRowId
 }
 
@@ -27,6 +34,18 @@ const STAFF = {
   beats: 4,
 } as const
 
+const COLUMN_STEP =
+  (STAFF.width - STAFF.paddingX * 2) / (STAFF.subdivisions - 1)
+const topLineY = STAFF.paddingY
+const noteStep = STAFF.lineSpacing / 2
+const staffHeight =
+  STAFF.paddingY * 2 + STAFF.lineSpacing * (STAFF.lines - 1)
+
+const yForRow = (row: number) => topLineY + (row - 1) * noteStep
+const xForColumn = (column: number) => STAFF.paddingX + column * COLUMN_STEP
+
+const MAX_HOVER_DISTANCE = noteStep * 1.25
+
 const ZOOM = {
   min: 1,
   max: 1.8,
@@ -34,35 +53,23 @@ const ZOOM = {
   default: 1.45,
 } as const
 
-const topLineY = STAFF.paddingY
-const noteStep = STAFF.lineSpacing / 2
-const staffHeight =
-  STAFF.paddingY * 2 + STAFF.lineSpacing * (STAFF.lines - 1)
-const contentWidth = STAFF.width - STAFF.paddingX * 2
-const columnStep =
-  STAFF.subdivisions > 1 ? contentWidth / (STAFF.subdivisions - 1) : contentWidth
-
-const staffLines = Array.from(
-  { length: STAFF.lines },
-  (_, index) => topLineY + index * STAFF.lineSpacing,
-)
-
-const columns = Array.from({ length: STAFF.subdivisions }, (_, index) => index)
-
-const beatMarkers = Array.from({ length: STAFF.beats }, (_, index) => index)
-
-const yForRow = (row: number) => topLineY + (row - 1) * noteStep
-const xForColumn = (column: number) => STAFF.paddingX + column * columnStep
-
-const MAX_HOVER_DISTANCE = noteStep * 1.25
-
 function App() {
   const svgRef = useRef<SVGSVGElement | null>(null)
-  const [notes, setNotes] = useState<PlacedNote[]>([])
-  const [hoverSlot, setHoverSlot] = useState<PlacedNote | null>(null)
+  const [measures, setMeasures] = useState<MeasureNote[][]>([[]])
+  const [currentMeasure, setCurrentMeasure] = useState(0)
+  const [clipboard, setClipboard] = useState<MeasureNote[] | null>(null)
+  const [hoverSlot, setHoverSlot] = useState<HoverSlot | null>(null)
   const [zoom, setZoom] = useState<number>(ZOOM.default)
 
-  const scaledWidth = Math.round(STAFF.width * zoom)
+  const measureSize = STAFF.subdivisions
+  const totalMeasures = measures.length
+  const totalColumns = totalMeasures * measureSize
+  const staffWidth =
+    totalColumns > 1
+      ? STAFF.paddingX * 2 + COLUMN_STEP * (totalColumns - 1)
+      : STAFF.width
+
+  const scaledWidth = Math.round(staffWidth * zoom)
   const zoomLabel = `${Math.round(zoom * 100)}%`
 
   const rowsById = useMemo(() => {
@@ -71,17 +78,43 @@ function App() {
     return map
   }, [])
 
-  const sortedNotes = useMemo(
+  const renderNotes = useMemo(
     () =>
-      [...notes].sort((a, b) => {
-        if (a.column === b.column) {
-          return NOTE_ROWS.findIndex((row) => row.id === a.rowId) -
-            NOTE_ROWS.findIndex((row) => row.id === b.rowId)
-        }
-        return a.column - b.column
-      }),
-    [notes],
+      measures.flatMap((measureNotes, measureIndex) =>
+        measureNotes.map((note) => ({
+          column: note.column + measureIndex * measureSize,
+          rowId: note.rowId,
+        })),
+      ),
+    [measures, measureSize],
   )
+
+  const sortedNotes = useMemo(() => {
+    const notesCopy = [...renderNotes]
+    notesCopy.sort((a, b) => {
+      if (a.column === b.column) {
+        return (
+          NOTE_ROWS.findIndex((row) => row.id === a.rowId) -
+          NOTE_ROWS.findIndex((row) => row.id === b.rowId)
+        )
+      }
+      return a.column - b.column
+    })
+    return notesCopy
+  }, [renderNotes])
+
+  const columns = useMemo(
+    () => Array.from({ length: totalColumns }, (_, index) => index),
+    [totalColumns],
+  )
+
+  const beatMarkers = useMemo(
+    () => Array.from({ length: totalMeasures * STAFF.beats }, (_, index) => index),
+    [totalMeasures],
+  )
+
+  const currentMeasureNotes = measures[currentMeasure] ?? []
+  const hasClipboard = clipboard !== null && clipboard.length > 0
 
   const handlePointerMove = (event: React.MouseEvent<SVGSVGElement>) => {
     if (!svgRef.current) {
@@ -89,15 +122,15 @@ function App() {
     }
 
     const rect = svgRef.current.getBoundingClientRect()
-    const scaleX = STAFF.width / rect.width
+    const scaleX = staffWidth / rect.width
     const scaleY = staffHeight / rect.height
     const x = (event.clientX - rect.left) * scaleX
     const y = (event.clientY - rect.top) * scaleY
 
-    const rawColumn = (x - STAFF.paddingX) / columnStep
+    const rawColumn = (x - STAFF.paddingX) / COLUMN_STEP
     const column = Math.round(rawColumn)
 
-    if (column < 0 || column >= STAFF.subdivisions) {
+    if (column < 0 || column >= totalColumns) {
       setHoverSlot(null)
       return
     }
@@ -119,7 +152,10 @@ function App() {
       return
     }
 
-    setHoverSlot({ column, rowId: closestRow.id })
+    const measure = Math.floor(column / measureSize)
+    const columnInMeasure = column % measureSize
+
+    setHoverSlot({ measure, column, columnInMeasure, rowId: closestRow.id })
   }
 
   const handleMouseLeave = () => {
@@ -131,26 +167,76 @@ function App() {
       return
     }
 
-    setNotes((current) => {
-      const exists = current.some(
-        (note) => note.column === hoverSlot.column && note.rowId === hoverSlot.rowId,
+    setMeasures((current) => {
+      const next = current.map((notes) => [...notes])
+      const measureNotes = next[hoverSlot.measure] ?? []
+      const exists = measureNotes.some(
+        (note) => note.column === hoverSlot.columnInMeasure && note.rowId === hoverSlot.rowId,
       )
       if (exists) {
-        return current
+        return next
       }
-      return [...current, hoverSlot]
+      next[hoverSlot.measure] = [
+        ...measureNotes,
+        { column: hoverSlot.columnInMeasure, rowId: hoverSlot.rowId },
+      ]
+      return next
     })
   }
 
   const handleClear = () => {
-    setNotes([])
+    if (currentMeasureNotes.length === 0) {
+      return
+    }
+    setMeasures((current) =>
+      current.map((measureNotes, index) => (index === currentMeasure ? [] : measureNotes)),
+    )
+    setHoverSlot(null)
   }
 
   const handleZoomChange = (event: ChangeEvent<HTMLInputElement>) => {
     setZoom(Number(event.target.value))
   }
 
-  const renderNote = (note: PlacedNote, key: string, isPreview = false) => {
+  const handlePrevMeasure = () => {
+    setCurrentMeasure((index) => Math.max(0, index - 1))
+    setHoverSlot(null)
+  }
+
+  const handleNextMeasure = () => {
+    setCurrentMeasure((index) => Math.min(totalMeasures - 1, index + 1))
+    setHoverSlot(null)
+  }
+
+  const handleAddMeasure = () => {
+    setMeasures((current) => {
+      const next = [...current, []]
+      setCurrentMeasure(next.length - 1)
+      return next
+    })
+    setHoverSlot(null)
+  }
+
+  const handleCopyMeasure = () => {
+    const measureNotes = measures[currentMeasure] ?? []
+    setClipboard(measureNotes.map((note) => ({ ...note })))
+  }
+
+  const handlePasteMeasure = () => {
+    if (!clipboard) {
+      return
+    }
+    setMeasures((current) =>
+      current.map((measureNotes, index) =>
+        index === currentMeasure
+          ? clipboard.map((note) => ({ ...note }))
+          : measureNotes,
+      ),
+    )
+    setHoverSlot(null)
+  }
+
+  const renderNote = (note: { column: number; rowId: NoteRowId }, key: string, isPreview = false) => {
     const row = rowsById.get(note.rowId)
     if (!row) {
       return null
@@ -200,8 +286,9 @@ function App() {
       <div className="intro">
         <h1>Drum staff sketch</h1>
         <p>
-          Click anywhere on the five-line staff to drop a percussion note. Notes snap to the
-          nearest voice and sixteenth-note grid so you can sketch grooves quickly.
+          Sketch grooves with percussion note heads that snap to the correct voices and
+          subdivisions. Use the controls below to resize the staff, manage measures, and copy or
+          paste ideas.
         </p>
         <div className="controls">
           <label className="zoom-control">
@@ -217,9 +304,59 @@ function App() {
             />
             <span className="zoom-control-value">{zoomLabel}</span>
           </label>
-          <button type="button" onClick={handleClear} disabled={notes.length === 0}>
+          <button
+            type="button"
+            className="pill-button"
+            onClick={handleClear}
+            disabled={currentMeasureNotes.length === 0}
+          >
             Clear measure
           </button>
+        </div>
+
+        <div className="measure-controls">
+          <div className="measure-navigation">
+            <button
+              type="button"
+              className="pill-button"
+              onClick={handlePrevMeasure}
+              disabled={currentMeasure === 0}
+            >
+              ◀ Prev
+            </button>
+            <span className="measure-indicator">
+              Measure {currentMeasure + 1} / {totalMeasures}
+            </span>
+            <button
+              type="button"
+              className="pill-button"
+              onClick={handleNextMeasure}
+              disabled={currentMeasure === totalMeasures - 1}
+            >
+              Next ▶
+            </button>
+          </div>
+          <div className="measure-actions">
+            <button type="button" className="pill-button" onClick={handleAddMeasure}>
+              Add measure
+            </button>
+            <button
+              type="button"
+              className="pill-button"
+              onClick={handleCopyMeasure}
+              disabled={currentMeasureNotes.length === 0}
+            >
+              Copy measure
+            </button>
+            <button
+              type="button"
+              className="pill-button"
+              onClick={handlePasteMeasure}
+              disabled={!hasClipboard}
+            >
+              Paste here
+            </button>
+          </div>
         </div>
       </div>
 
@@ -227,7 +364,7 @@ function App() {
         <svg
           ref={svgRef}
           className="staff"
-          viewBox={`0 0 ${STAFF.width} ${staffHeight}`}
+          viewBox={`0 0 ${staffWidth} ${staffHeight}`}
           onMouseMove={handlePointerMove}
           onMouseLeave={handleMouseLeave}
           onClick={handleClick}
@@ -236,19 +373,18 @@ function App() {
           <rect
             x={32}
             y={24}
-            width={STAFF.width - 64}
+            width={staffWidth - 64}
             height={staffHeight - 48}
             className="staff-surface"
             rx={16}
           />
 
           {columns.map((column) => {
-            const x = xForColumn(column)
-            const isBeatMarker = column % (STAFF.subdivisions / STAFF.beats) === 0
-            if (column === 0 || column === STAFF.subdivisions - 1) {
+            if (column === 0 || column === totalColumns - 1) {
               return null
             }
-
+            const x = xForColumn(column)
+            const isBeatMarker = column % (STAFF.subdivisions / STAFF.beats) === 0
             return (
               <line
                 key={`col-${column}`}
@@ -261,23 +397,26 @@ function App() {
             )
           })}
 
-          {staffLines.map((y, index) => (
-            <line
-              key={`line-${index}`}
-              x1={STAFF.paddingX - 24}
-              y1={y}
-              x2={STAFF.width - STAFF.paddingX + 24}
-              y2={y}
-              className="staff-line"
-            />
-          ))}
+          {Array.from({ length: STAFF.lines }, (_, index) => topLineY + index * STAFF.lineSpacing).map(
+            (y, index) => (
+              <line
+                key={`line-${index}`}
+                x1={STAFF.paddingX - 24}
+                y1={y}
+                x2={staffWidth - STAFF.paddingX + 24}
+                y2={y}
+                className="staff-line"
+              />
+            ),
+          )}
 
           {beatMarkers.map((beat) => {
             const column = beat * (STAFF.subdivisions / STAFF.beats)
             const x = xForColumn(column)
+            const beatNumber = (beat % STAFF.beats) + 1
             return (
               <text key={`beat-${beat}`} x={x} y={topLineY - noteStep * 2.7} className="beat-label">
-                {beat + 1}
+                {beatNumber}
               </text>
             )
           })}

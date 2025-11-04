@@ -9,11 +9,11 @@
 }
 
 .intro {
-  max-width: 600px;
+  max-width: 760px;
   text-align: center;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
 }
 
 .intro h1 {
@@ -36,7 +36,7 @@
   gap: 16px;
 }
 
-.controls button {
+.pill-button {
   border: none;
   padding: 0.65em 1.6em;
   font-size: 0.95rem;
@@ -48,13 +48,13 @@
   transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
 
-.controls button:hover:not(:disabled) {
+.pill-button:hover:not(:disabled) {
   transform: translateY(-1px);
   box-shadow: 0 10px 22px rgba(47, 72, 214, 0.25);
   background: #1f39c4;
 }
 
-.controls button:disabled {
+.pill-button:disabled {
   background: #b9c1da;
   cursor: default;
   box-shadow: none;
@@ -85,6 +85,31 @@
   min-width: 46px;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.measure-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+}
+
+.measure-navigation,
+.measure-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+}
+
+.measure-indicator {
+  font-weight: 600;
+  color: #2f3761;
+  background: #f0f3ff;
+  border-radius: 999px;
+  padding: 0.45em 1.2em;
+  min-width: 180px;
 }
 
 .staff-card {
@@ -233,5 +258,9 @@
   .zoom-control input[type='range'] {
     width: 100%;
     max-width: 220px;
+  }
+
+  .measure-indicator {
+    min-width: auto;
   }
 }
