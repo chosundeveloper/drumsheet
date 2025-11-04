@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState } from 'react'
-import type { ChangeEvent } from 'react'
+import { useMemo, useState } from 'react'
+import type { ChangeEvent, MouseEvent as ReactMouseEvent } from 'react'
 import './App.css'
 
 const NOTE_ROWS = [
@@ -29,6 +29,7 @@ type HoverSlot = {
   columnInMeasure: number
   rowId: NoteRowId
   duration: number
+  rowStart: number
 }
 
 const STAFF = {
@@ -42,6 +43,8 @@ const STAFF = {
 } as const
 
 const DEFAULT_SUBDIVISIONS = STAFF.subdivisions
+const MEASURES_PER_ROW = 4
+
 const baseContentWidth = STAFF.width - STAFF.paddingX * 2
 const COLUMN_STEP = baseContentWidth / (STAFF.subdivisions - 1)
 const topLineY = STAFF.paddingY
@@ -65,11 +68,14 @@ const DURATION_OPTIONS = [
 
 type DurationOption = (typeof DURATION_OPTIONS)[number]
 
-const xForColumn = (column: number) => STAFF.paddingX + column * COLUMN_STEP
+const xForColumnInRow = (column: number, rowStart: number) =>
+  STAFF.paddingX + (column - rowStart) * COLUMN_STEP
 const yForRow = (row: number) => topLineY + (row - 1) * noteStep
 
+const computeRowWidth = (subdivisions: number) =>
+  STAFF.paddingX * 2 + COLUMN_STEP * Math.max(subdivisions - 1, 0)
+
 function App() {
-  const svgRef = useRef<SVGSVGElement | null>(null)
   const [measures, setMeasures] = useState<Measure[]>([
     { subdivisions: DEFAULT_SUBDIVISIONS, notes: [] },
   ])
@@ -89,40 +95,66 @@ function App() {
     return offsets
   }, [measures])
 
-  const totalColumns = useMemo(() => {
-    if (measureOffsets.length === 0) {
-      return DEFAULT_SUBDIVISIONS
+  const rows = useMemo(() => {
+    if (measures.length === 0) {
+      return [] as Array<{
+        rowIndex: number
+        start: number
+        subdivisions: number
+        measureStartIndex: number
+        measureCount: number
+      }>
     }
-    const last = measureOffsets[measureOffsets.length - 1]
-    return last.start + last.subdivisions
-  }, [measureOffsets])
 
-  const staffWidth = Math.max(
-    STAFF.width,
-    STAFF.paddingX * 2 + COLUMN_STEP * Math.max(totalColumns - 1, 0),
-  )
-  const scaledWidth = Math.round(staffWidth * zoom)
-  const zoomLabel = `${Math.round(zoom * 100)}%`
+    const result: Array<{
+      rowIndex: number
+      start: number
+      subdivisions: number
+      measureStartIndex: number
+      measureCount: number
+    }> = []
 
-  const columns = useMemo(
-    () => Array.from({ length: Math.max(totalColumns, 1) }, (_, index) => index),
-    [totalColumns],
-  )
+    for (let measureStartIndex = 0; measureStartIndex < measures.length; measureStartIndex += MEASURES_PER_ROW) {
+      const slice = measures.slice(measureStartIndex, measureStartIndex + MEASURES_PER_ROW)
+      const start = measureOffsets[measureStartIndex]?.start ?? 0
+      const subdivisions = slice.reduce((total, measure) => total + measure.subdivisions, 0)
+      result.push({
+        rowIndex: result.length,
+        start,
+        subdivisions,
+        measureStartIndex,
+        measureCount: slice.length,
+      })
+    }
 
-  const beatMarkers = useMemo(() => {
-    const markers: Array<{ position: number; label: number }> = []
-    measureOffsets.forEach((offset, measureIndex) => {
-      const subdivisions = measures[measureIndex]?.subdivisions ?? DEFAULT_SUBDIVISIONS
-      const unitsPerBeat = subdivisions / STAFF.beats
-      for (let beat = 0; beat < STAFF.beats; beat += 1) {
-        const position = offset.start + unitsPerBeat * beat
-        markers.push({ position, label: beat + 1 })
-      }
-    })
-    return markers
+    return result
   }, [measureOffsets, measures])
 
-  const renderNotes = useMemo(() => {
+  const zoomLabel = `${Math.round(zoom * 100)}%`
+
+  const beatMarkersByRow = useMemo(() => {
+    return rows.map((row) => {
+      const markers: Array<{ position: number; label: number }> = []
+      for (let offsetIndex = row.measureStartIndex; offsetIndex < row.measureStartIndex + row.measureCount; offsetIndex += 1) {
+        const measure = measures[offsetIndex]
+        if (!measure) {
+          continue
+        }
+        const offset = measureOffsets[offsetIndex]
+        if (!offset) {
+          continue
+        }
+        const unitsPerBeat = measure.subdivisions / STAFF.beats
+        for (let beat = 0; beat < STAFF.beats; beat += 1) {
+          const position = offset.start + unitsPerBeat * beat
+          markers.push({ position, label: beat + 1 })
+        }
+      }
+      return markers
+    })
+  }, [measureOffsets, measures, rows])
+
+  const flattenedNotes = useMemo(() => {
     const flattened: Array<{ column: number; rowId: NoteRowId; duration: number }> = []
     measures.forEach((measure, measureIndex) => {
       const offset = measureOffsets[measureIndex]?.start ?? 0
@@ -165,21 +197,29 @@ function App() {
     }
   }
 
-  const handlePointerMove = (event: React.MouseEvent<SVGSVGElement>) => {
-    if (!svgRef.current) {
-      return
-    }
-
-    const rect = svgRef.current.getBoundingClientRect()
-    const scaleX = staffWidth / rect.width
+  const handlePointerMove = (
+    event: ReactMouseEvent<SVGSVGElement>,
+    rowStart: number,
+    rowSubdivisions: number,
+  ) => {
+    const svg = event.currentTarget
+    const rect = svg.getBoundingClientRect()
+    const rowWidth = computeRowWidth(rowSubdivisions)
+    const scaleX = rowWidth / rect.width
     const scaleY = staffHeight / rect.height
     const x = (event.clientX - rect.left) * scaleX
     const y = (event.clientY - rect.top) * scaleY
 
-    const rawColumn = (x - STAFF.paddingX) / COLUMN_STEP
-    const column = Math.round(rawColumn)
+    const rawColumnLocal = (x - STAFF.paddingX) / COLUMN_STEP
+    const rawColumnGlobal = rawColumnLocal + rowStart
+    const column = Math.round(rawColumnGlobal)
 
-    if (column < 0 || column >= totalColumns) {
+    if (Number.isNaN(column)) {
+      setHoverSlot(null)
+      return
+    }
+
+    if (column < rowStart || column >= rowStart + rowSubdivisions) {
       setHoverSlot(null)
       return
     }
@@ -213,6 +253,7 @@ function App() {
       columnInMeasure: location.columnInMeasure,
       rowId: closestRow.id,
       duration: selectedDuration,
+      rowStart,
     })
   }
 
@@ -278,6 +319,8 @@ function App() {
         }
       }),
     )
+
+    setHoverSlot(null)
   }
 
   const handleClear = () => {
@@ -340,6 +383,7 @@ function App() {
 
   const renderNote = (
     note: { column: number; rowId: NoteRowId; duration: number },
+    rowStart: number,
     key: string,
     isPreview = false,
   ) => {
@@ -348,7 +392,7 @@ function App() {
       return null
     }
 
-    const x = xForColumn(note.column)
+    const x = xForColumnInRow(note.column, rowStart)
     const y = yForRow(row.row)
     const stemLength = noteStep * 3
     const groupClass = isPreview ? 'note preview' : 'note'
@@ -391,9 +435,9 @@ function App() {
       <div className="intro">
         <h1>Drum staff sketch</h1>
         <p>
-          Sketch grooves with percussion note heads that snap to the correct voices and
-          subdivisions. Use the controls below to resize the staff, manage measures, copy ideas, and
-          choose note lengths.
+          Sketch grooves with percussion note heads that snap to the correct voices and subdivisions.
+          Use the controls below to resize the staff, manage measures, copy ideas, and choose note
+          lengths.
         </p>
         <div className="controls">
           <label className="zoom-control">
@@ -484,81 +528,101 @@ function App() {
       </div>
 
       <div className="staff-card">
-        <svg
-          ref={svgRef}
-          className="staff"
-          viewBox={`0 0 ${staffWidth} ${staffHeight}`}
-          onMouseMove={handlePointerMove}
-          onMouseLeave={handleMouseLeave}
-          onClick={handleClick}
-          style={{ width: `${scaledWidth}px`, maxWidth: '100%' }}
-        >
-          <rect
-            x={32}
-            y={24}
-            width={staffWidth - 64}
-            height={staffHeight - 48}
-            className="staff-surface"
-            rx={16}
-          />
+        <div className="staff-rows">
+          {rows.map((row, rowIndex) => {
+            const rowWidth = computeRowWidth(row.subdivisions)
+            const rowScaledWidth = Math.round(rowWidth * zoom)
+            const rowNotes = flattenedNotes.filter(
+              (note) => note.column >= row.start && note.column < row.start + row.subdivisions,
+            )
+            const rowMarkers = beatMarkersByRow[rowIndex] ?? []
 
-          {columns.map((column) => {
-            if (column === 0 || column === totalColumns - 1) {
-              return null
-            }
-            const x = xForColumn(column)
-            const isBeatMarker = beatMarkers.some((marker) => Math.abs(marker.position - column) < 0.001)
             return (
-              <line
-                key={`col-${column}`}
-                x1={x}
-                y1={topLineY - noteStep * 2}
-                x2={x}
-                y2={staffHeight - STAFF.paddingY + noteStep * 2}
-                className={isBeatMarker ? 'grid-line beat' : 'grid-line subdivision'}
-              />
+              <div key={row.rowIndex} className="staff-row">
+                <svg
+                  className="staff"
+                  viewBox={`0 0 ${rowWidth} ${staffHeight}`}
+                  onMouseMove={(event) => handlePointerMove(event, row.start, row.subdivisions)}
+                  onMouseLeave={handleMouseLeave}
+                  onClick={handleClick}
+                  style={{ width: `${rowScaledWidth}px`, maxWidth: '100%' }}
+                >
+                  <rect
+                    x={32}
+                    y={24}
+                    width={rowWidth - 64}
+                    height={staffHeight - 48}
+                    className="staff-surface"
+                    rx={16}
+                  />
+
+                  {Array.from({ length: row.subdivisions }, (_, index) => index + row.start).map(
+                    (column) => {
+                      if (column === row.start || column === row.start + row.subdivisions - 1) {
+                        return null
+                      }
+                      const x = xForColumnInRow(column, row.start)
+                      const isBeatMarker = rowMarkers.some(
+                        (marker) => Math.abs(marker.position - column) < 0.001,
+                      )
+                      return (
+                        <line
+                          key={`col-${rowIndex}-${column}`}
+                          x1={x}
+                          y1={topLineY - noteStep * 2}
+                          x2={x}
+                          y2={staffHeight - STAFF.paddingY + noteStep * 2}
+                          className={isBeatMarker ? 'grid-line beat' : 'grid-line subdivision'}
+                        />
+                      )
+                    },
+                  )}
+
+                  {Array.from({ length: STAFF.lines }, (_, index) => topLineY + index * STAFF.lineSpacing).map(
+                    (y, index) => (
+                      <line
+                        key={`line-${rowIndex}-${index}`}
+                        x1={STAFF.paddingX - 24}
+                        y1={y}
+                        x2={rowWidth - STAFF.paddingX + 24}
+                        y2={y}
+                        className="staff-line"
+                      />
+                    ),
+                  )}
+
+                  {rowMarkers.map((marker, index) => (
+                    <text
+                      key={`beat-${rowIndex}-${index}`}
+                      x={xForColumnInRow(marker.position, row.start)}
+                      y={topLineY - noteStep * 2.7}
+                      className="beat-label"
+                    >
+                      {marker.label}
+                    </text>
+                  ))}
+
+                  {rowNotes.map((note, index) =>
+                    renderNote(note, row.start, `note-${rowIndex}-${index}-${note.column}-${note.rowId}`),
+                  )}
+
+                  {hoverSlot &&
+                    hoverSlot.rowStart === row.start &&
+                    renderNote(
+                      {
+                        column: hoverSlot.column,
+                        rowId: hoverSlot.rowId,
+                        duration: hoverSlot.duration,
+                      },
+                      row.start,
+                      'preview',
+                      true,
+                    )}
+                </svg>
+              </div>
             )
           })}
-
-          {Array.from({ length: STAFF.lines }, (_, index) => topLineY + index * STAFF.lineSpacing).map(
-            (y, index) => (
-              <line
-                key={`line-${index}`}
-                x1={STAFF.paddingX - 24}
-                y1={y}
-                x2={staffWidth - STAFF.paddingX + 24}
-                y2={y}
-                className="staff-line"
-              />
-            ),
-          )}
-
-          {beatMarkers.map((marker, index) => (
-            <text
-              key={`beat-${index}-${marker.label}`}
-              x={xForColumn(marker.position)}
-              y={topLineY - noteStep * 2.7}
-              className="beat-label"
-            >
-              {marker.label}
-            </text>
-          ))}
-
-          {renderNotes.map((note, index) =>
-            renderNote(note, `note-${index}-${note.column}-${note.rowId}`),
-          )}
-
-          {hoverSlot &&
-            renderNote(
-              {
-                column: hoverSlot.column,
-                rowId: hoverSlot.rowId,
-                duration: hoverSlot.duration,
-              },
-              'preview',
-              true,
-            )}
-        </svg>
+        </div>
 
         <div className="legend">
           <span className="legend-title">Voices</span>
