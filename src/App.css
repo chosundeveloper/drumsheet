@@ -87,6 +87,48 @@
   font-variant-numeric: tabular-nums;
 }
 
+.duration-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0.45em 1.1em;
+  border-radius: 999px;
+  background: #f5f7ff;
+  color: #2d3360;
+  font-weight: 600;
+}
+
+.duration-label {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.duration-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.pill-button.duration {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0.55em 1.2em;
+  background: #d6dcff;
+  color: #23306b;
+  box-shadow: none;
+}
+
+.pill-button.duration span[aria-hidden] {
+  font-size: 1rem;
+}
+
+.pill-button.duration.active {
+  background: #2f48d6;
+  color: #ffffff;
+  box-shadow: 0 12px 26px rgba(47, 72, 214, 0.28);
+}
+
 .measure-controls {
   display: flex;
   flex-direction: column;
@@ -109,7 +151,7 @@
   background: #f0f3ff;
   border-radius: 999px;
   padding: 0.45em 1.2em;
-  min-width: 180px;
+  min-width: 200px;
 }
 
 .staff-card {
@@ -153,7 +195,8 @@
 
 .grid-line.beat {
   stroke: #8c9bd8;
-  opacity: 0.75;
+  opacity: 0.9;
+  stroke-width: 1.2;
 }
 
 .beat-label {
@@ -193,6 +236,14 @@
 
 .note-x.preview {
   stroke: rgba(25, 29, 55, 0.25);
+}
+
+.note-flag {
+  fill: #191d37;
+}
+
+.note-flag.preview {
+  fill: rgba(25, 29, 55, 0.25);
 }
 
 .legend {
@@ -250,7 +301,8 @@
     padding: 24px 20px 32px;
   }
 
-  .zoom-control {
+  .zoom-control,
+  .duration-controls {
     width: 100%;
     justify-content: center;
   }
