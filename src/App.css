@@ -36,6 +36,55 @@
   gap: 16px;
 }
 
+.playback-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0.45em 1.1em;
+  border-radius: 999px;
+  background: #eef0ff;
+  color: #2a315c;
+  font-weight: 600;
+}
+
+.play-button.active {
+  background: #f2576d;
+  box-shadow: 0 12px 26px rgba(242, 87, 109, 0.28);
+}
+
+.play-button:disabled {
+  background: #c4cbe6;
+  cursor: default;
+  box-shadow: none;
+}
+
+.tempo-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0.35em 1em;
+  border-radius: 999px;
+  background: #f6f8ff;
+  color: #2f3761;
+}
+
+.tempo-control span:first-child {
+  font-size: 0.85rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.tempo-control input[type='range'] {
+  width: 160px;
+  accent-color: #2f48d6;
+}
+
+.tempo-value {
+  min-width: 72px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .pill-button {
   border: none;
   padding: 0.65em 1.6em;
@@ -316,6 +365,7 @@
   }
 
   .zoom-control,
+  .playback-controls,
   .duration-controls {
     width: 100%;
     justify-content: center;
@@ -324,6 +374,15 @@
   .zoom-control input[type='range'] {
     width: 100%;
     max-width: 220px;
+  }
+
+  .tempo-control {
+    flex-wrap: wrap;
+  }
+
+  .tempo-control input[type='range'] {
+    width: 100%;
+    max-width: 240px;
   }
 
   .measure-indicator {

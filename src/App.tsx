@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, MouseEvent as ReactMouseEvent } from 'react'
 import './App.css'
 
@@ -44,6 +44,7 @@ const STAFF = {
 
 const DEFAULT_SUBDIVISIONS = STAFF.subdivisions
 const MEASURES_PER_ROW = 4
+const TEMPO = { min: 60, max: 180, default: 110 } as const
 
 const baseContentWidth = STAFF.width - STAFF.paddingX * 2
 const COLUMN_STEP = baseContentWidth / (STAFF.subdivisions - 1)
@@ -68,6 +69,8 @@ const DURATION_OPTIONS = [
 
 type DurationOption = (typeof DURATION_OPTIONS)[number]
 
+type StoppableNode = AudioScheduledSourceNode
+
 const xForColumnInRow = (column: number, rowStart: number) =>
   STAFF.paddingX + (column - rowStart) * COLUMN_STEP
 const yForRow = (row: number) => topLineY + (row - 1) * noteStep
@@ -84,6 +87,13 @@ function App() {
   const [hoverSlot, setHoverSlot] = useState<HoverSlot | null>(null)
   const [zoom, setZoom] = useState(1.45)
   const [selectedDuration, setSelectedDuration] = useState<DurationOption['value']>(1)
+  const [tempo, setTempo] = useState<number>(TEMPO.default)
+  const [isPlaying, setIsPlaying] = useState(false)
+
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const scheduledStopRef = useRef<number | null>(null)
+  const playingNodesRef = useRef<StoppableNode[]>([])
+  const noiseBufferRef = useRef<AudioBuffer | null>(null)
 
   const measureOffsets = useMemo(() => {
     const offsets: Array<{ start: number; subdivisions: number }> = []
@@ -197,6 +207,173 @@ function App() {
     }
   }
 
+  const stopPlayback = () => {
+    if (scheduledStopRef.current !== null) {
+      window.clearTimeout(scheduledStopRef.current)
+      scheduledStopRef.current = null
+    }
+    playingNodesRef.current.forEach((node) => {
+      try {
+        node.stop()
+      } catch {
+        // node might already be stopped
+      }
+    })
+    playingNodesRef.current = []
+    setIsPlaying(false)
+  }
+
+  useEffect(() => {
+    return () => {
+      stopPlayback()
+      audioContextRef.current?.close().catch(() => undefined)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const getNoiseBuffer = (ctx: AudioContext) => {
+    if (!noiseBufferRef.current) {
+      const buffer = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate)
+      const data = buffer.getChannelData(0)
+      for (let i = 0; i < data.length; i += 1) {
+        data[i] = Math.random() * 2 - 1
+      }
+      noiseBufferRef.current = buffer
+    }
+    return noiseBufferRef.current
+  }
+
+  const triggerSound = (
+    ctx: AudioContext,
+    rowId: NoteRowId,
+    when: number,
+    durationSeconds: number,
+    nodes: StoppableNode[],
+  ) => {
+    const gain = ctx.createGain()
+    gain.connect(ctx.destination)
+
+    const scheduleGainEnvelope = (attack: number, decay: number) => {
+      gain.gain.cancelScheduledValues(when)
+      gain.gain.setValueAtTime(0.0001, when)
+      gain.gain.linearRampToValueAtTime(attack, when + 0.005)
+      gain.gain.exponentialRampToValueAtTime(0.0001, when + decay)
+    }
+
+    if (rowId === 'hh') {
+      const source = ctx.createBufferSource()
+      source.buffer = getNoiseBuffer(ctx)
+      const filter = ctx.createBiquadFilter()
+      filter.type = 'highpass'
+      filter.frequency.setValueAtTime(8000, when)
+      const decay = Math.min(durationSeconds, 0.18)
+      scheduleGainEnvelope(0.7, decay)
+      source.connect(filter)
+      filter.connect(gain)
+      source.start(when)
+      source.stop(when + decay + 0.05)
+      nodes.push(source)
+      return
+    }
+
+    if (rowId === 'sn') {
+      const noise = ctx.createBufferSource()
+      noise.buffer = getNoiseBuffer(ctx)
+      const bandpass = ctx.createBiquadFilter()
+      bandpass.type = 'bandpass'
+      bandpass.frequency.setValueAtTime(1800, when)
+      noise.connect(bandpass)
+      bandpass.connect(gain)
+      const osc = ctx.createOscillator()
+      osc.type = 'triangle'
+      osc.frequency.setValueAtTime(190, when)
+      osc.frequency.exponentialRampToValueAtTime(120, when + 0.2)
+      const oscGain = ctx.createGain()
+      oscGain.gain.setValueAtTime(0.001, when)
+      oscGain.gain.linearRampToValueAtTime(0.25, when + 0.01)
+      oscGain.gain.exponentialRampToValueAtTime(0.001, when + 0.2)
+      osc.connect(oscGain)
+      oscGain.connect(gain)
+      scheduleGainEnvelope(0.9, 0.25)
+      noise.start(when)
+      noise.stop(when + 0.25)
+      osc.start(when)
+      osc.stop(when + 0.25)
+      nodes.push(noise, osc)
+      return
+    }
+
+    if (rowId === 'ht') {
+      const osc = ctx.createOscillator()
+      osc.type = 'sine'
+      osc.frequency.setValueAtTime(320, when)
+      osc.frequency.exponentialRampToValueAtTime(220, when + 0.35)
+      scheduleGainEnvelope(0.8, Math.max(durationSeconds, 0.3))
+      osc.connect(gain)
+      osc.start(when)
+      osc.stop(when + Math.max(durationSeconds, 0.4))
+      nodes.push(osc)
+      return
+    }
+
+    // Kick
+    const osc = ctx.createOscillator()
+    osc.type = 'sine'
+    osc.frequency.setValueAtTime(160, when)
+    osc.frequency.exponentialRampToValueAtTime(55, when + 0.25)
+    scheduleGainEnvelope(1, Math.max(durationSeconds, 0.3))
+    osc.connect(gain)
+    osc.start(when)
+    osc.stop(when + Math.max(durationSeconds, 0.35))
+    nodes.push(osc)
+  }
+
+  const startPlayback = async () => {
+    if (flattenedNotes.length === 0) {
+      return
+    }
+
+    stopPlayback()
+
+    const ctx = (() => {
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        return audioContextRef.current
+      }
+      const context = new AudioContext()
+      audioContextRef.current = context
+      return context
+    })()
+
+    if (ctx.state === 'suspended') {
+      try {
+        await ctx.resume()
+      } catch {
+        return
+      }
+    }
+
+    const unitSeconds = (60 / tempo) / 4
+    const startAt = ctx.currentTime + 0.1
+    const nodes: StoppableNode[] = []
+
+    let latestColumn = 0
+    flattenedNotes.forEach((note) => {
+      const when = startAt + note.column * unitSeconds
+      const durationSeconds = Math.max(note.duration * unitSeconds, 0.05)
+      triggerSound(ctx, note.rowId, when, durationSeconds, nodes)
+      latestColumn = Math.max(latestColumn, note.column + note.duration)
+    })
+
+    playingNodesRef.current = nodes
+
+    const totalDurationSeconds = Math.max(latestColumn * unitSeconds + 0.5, 0.5)
+    scheduledStopRef.current = window.setTimeout(() => {
+      stopPlayback()
+    }, totalDurationSeconds * 1000)
+
+    setIsPlaying(true)
+  }
+
   const handlePointerMove = (
     event: ReactMouseEvent<SVGSVGElement>,
     rowStart: number,
@@ -263,6 +440,10 @@ function App() {
 
   const handleZoomChange = (event: ChangeEvent<HTMLInputElement>) => {
     setZoom(Number(event.target.value))
+  }
+
+  const handleTempoChange = (event: ChangeEvent<HTMLInputElement>) => {
+    setTempo(Number(event.target.value))
   }
 
   const handleNoteDurationChange = (value: DurationOption['value']) => {
@@ -430,14 +611,22 @@ function App() {
     )
   }
 
+  const handlePlayButton = () => {
+    if (isPlaying) {
+      stopPlayback()
+      return
+    }
+    void startPlayback()
+  }
+
   return (
     <div className="app">
       <div className="intro">
         <h1>Drum staff sketch</h1>
         <p>
           Sketch grooves with percussion note heads that snap to the correct voices and subdivisions.
-          Use the controls below to resize the staff, manage measures, copy ideas, and choose note
-          lengths.
+          Use the controls below to resize the staff, manage measures, copy ideas, choose note lengths,
+          and audition your pattern.
         </p>
         <div className="controls">
           <label className="zoom-control">
@@ -453,6 +642,31 @@ function App() {
             />
             <span className="zoom-control-value">{zoomLabel}</span>
           </label>
+
+          <div className="playback-controls">
+            <button
+              type="button"
+              className={`pill-button play-button ${isPlaying ? 'active' : ''}`}
+              onClick={handlePlayButton}
+              disabled={flattenedNotes.length === 0}
+            >
+              {isPlaying ? 'Stop' : 'Play'}
+            </button>
+            <label className="tempo-control">
+              <span>Tempo</span>
+              <input
+                type="range"
+                min={TEMPO.min}
+                max={TEMPO.max}
+                step={1}
+                value={tempo}
+                onChange={handleTempoChange}
+                aria-label="Adjust tempo"
+              />
+              <span className="tempo-value">{tempo} BPM</span>
+            </label>
+          </div>
+
           <div className="duration-controls">
             <span className="duration-label">Note length</span>
             <div className="duration-buttons">
@@ -471,6 +685,7 @@ function App() {
               ))}
             </div>
           </div>
+
           <button
             type="button"
             className="pill-button"
